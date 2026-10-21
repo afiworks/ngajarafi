@@ -1,14 +1,14 @@
-import { env } from 'cloudflare:workers';
+import { database } from '@/lib/vercel-db';
 export const dynamic='force-dynamic';
 const enc=new TextEncoder();
 const hex=(b:ArrayBuffer)=>Array.from(new Uint8Array(b),x=>x.toString(16).padStart(2,'0')).join('');
 async function hash(s:string){return hex(await crypto.subtle.digest('SHA-256',enc.encode(s)))}
 async function pinHash(pin:string,salt:string){const k=await crypto.subtle.importKey('raw',enc.encode(pin),'PBKDF2',false,['deriveBits']);return hex(await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-256',salt:enc.encode(salt),iterations:100000},k,256))}
 function fail(message:string,status=400):never{throw Object.assign(new Error(message),{status})}
-function db(){if(!env.DB)fail('Database belum tersedia.',503);return env.DB!}
+function db(){return database}
 function out(data:unknown,status=200,headers:Record<string,string>={}){return Response.json(data,{status,headers:{'Cache-Control':'no-store',...headers}})}
 function str(value:unknown,min=1,max=80){if(typeof value!=='string'||value.trim().length<min||value.trim().length>max)fail('Periksa kembali isian kamu.');return value.trim()}
-function teacherSecret(){const secret=(env as unknown as {TEACHER_PASSCODE?:string}).TEACHER_PASSCODE;if(!secret)fail('Akses pengajar belum dikonfigurasi.',503);return secret}
+function teacherSecret(){const secret=process.env.TEACHER_PASSCODE;if(!secret)fail('Akses pengajar belum dikonfigurasi.',503);return secret}
 function teacherToken(req:Request){return req.headers.get('cookie')?.match(/(?:^|;\s*)sc_teacher=([^;]+)/)?.[1]}
 async function teacherSignedIn(req:Request){const token=teacherToken(req);if(!token)return false;const row=await db().prepare('SELECT hash FROM teacher_sessions WHERE hash=? AND expires>? AND version=?').bind(await hash(token),Date.now(),await hash(teacherSecret())).first();return !!row}
 async function requireTeacher(req:Request){if(!await teacherSignedIn(req))fail('Masukkan passcode pengajar terlebih dahulu.',401)}
@@ -30,7 +30,7 @@ async function run(req:Request){
  let b;try{b=JSON.parse(raw)}catch{fail('Data tidak valid.')}
  if(b.action==='teacher-login'){
   const pin=str(b.pin,1,64),secret=teacherSecret();
-  await limit('teacher-login:'+await hash(req.headers.get('cf-connecting-ip')||'unknown'),8,900000);
+  await limit('teacher-login:'+await hash(req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()||'unknown'),8,900000);
   const given=await hash(pin),expected=await hash(secret);let diff=0;for(let i=0;i<given.length;i++)diff|=given.charCodeAt(i)^expected.charCodeAt(i);
   if(diff)fail('Passcode pengajar salah.',401);
   const token=crypto.randomUUID()+crypto.randomUUID();
@@ -49,17 +49,17 @@ async function run(req:Request){
  }
  if(b.action==='join'){
   const code=str(b.code,8,8).toUpperCase(),name=str(b.name,2,40),pin=str(b.pin,6,64),normalized=name.normalize('NFKC').toLocaleLowerCase('id-ID');
-  const ip=req.headers.get('cf-connecting-ip')||'unknown';await limit('join-ip:'+await hash(ip),200,600000);await limit('join:'+await hash(code+':'+normalized),12,600000);
+  const ip=req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()||'unknown';await limit('join-ip:'+await hash(ip),200,600000);await limit('join:'+await hash(code+':'+normalized),12,600000);
   const c=await db().prepare('SELECT * FROM classes WHERE code=?').bind(code).first();if(!c)fail('Kode kelas tidak ditemukan. Periksa QR atau kode dari pengajar.');
   let p=await db().prepare('SELECT * FROM participants WHERE class_id=? AND normalized=?').bind(c.id,normalized).first();
   if(p){if(await pinHash(pin,String(p.salt))!==p.pin_hash)fail('Nama sudah terdaftar. Gunakan passcode yang benar, atau nama lengkap yang berbeda.',401)}
-  else {if(c.status==='closed')fail('Kelas sudah selesai.');const salt=crypto.randomUUID(),id=crypto.randomUUID();const h=await pinHash(pin,salt);await db().prepare('INSERT OR IGNORE INTO participants(id,class_id,name,normalized,pin_hash,salt,created) VALUES(?,?,?,?,?,?,?)').bind(id,c.id,name,normalized,h,salt,Date.now()).run();p=await db().prepare('SELECT * FROM participants WHERE class_id=? AND normalized=?').bind(c.id,normalized).first();if(await pinHash(pin,String(p!.salt))!==p!.pin_hash)fail('Nama sudah digunakan. Coba nama lengkap yang berbeda.',409)}
+  else {if(c.status==='closed')fail('Kelas sudah selesai.');const salt=crypto.randomUUID(),id=crypto.randomUUID();const h=await pinHash(pin,salt);await db().prepare('INSERT INTO participants(id,class_id,name,normalized,pin_hash,salt,created) VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING').bind(id,c.id,name,normalized,h,salt,Date.now()).run();p=await db().prepare('SELECT * FROM participants WHERE class_id=? AND normalized=?').bind(c.id,normalized).first();if(await pinHash(pin,String(p!.salt))!==p!.pin_hash)fail('Nama sudah digunakan. Coba nama lengkap yang berbeda.',409)}
   const token=crypto.randomUUID()+crypto.randomUUID();await db().batch([db().prepare('DELETE FROM tokens WHERE expires<?').bind(Date.now()),db().prepare('INSERT INTO tokens(hash,participant_id,expires) VALUES(?,?,?)').bind(await hash(token),p!.id,Date.now()+7*86400000)]);return out({ok:true},200,{'Set-Cookie':`sc_session=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800`});
  }
  if(b.action==='claim'){
   const p=await participant(req),requestId=str(b.requestId,36,36),now=Date.now();
   const prior=await db().prepare('SELECT id FROM stars WHERE request_id=? AND participant_id=?').bind(requestId,p.id).first();if(prior)return out({ok:true,duplicate:true});
-  const result=await db().prepare(`INSERT OR IGNORE INTO stars(participant_id,class_id,request_id,created) SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM classes WHERE id=? AND status='open') AND NOT EXISTS(SELECT 1 FROM stars WHERE participant_id=? AND created>?)`).bind(p.id,p.class_id,requestId,now,p.class_id,p.id,now-3000).run();
+  const result=await db().prepare(`INSERT INTO stars(participant_id,class_id,request_id,created) SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM classes WHERE id=? AND status='open') AND NOT EXISTS(SELECT 1 FROM stars WHERE participant_id=? AND created>?) ON CONFLICT DO NOTHING`).bind(p.id,p.class_id,requestId,now,p.class_id,p.id,now-3000).run();
   if(!result.meta.changes)fail('Tombol sedang dijeda, kelas selesai, atau kamu baru saja mengklaim. Tunggu 3 detik.',409);
   return out({ok:true});
  }
