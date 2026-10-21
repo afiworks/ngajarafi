@@ -8,18 +8,20 @@ database.exec('PRAGMA foreign_keys=ON');
 for(const f of readdirSync('drizzle').filter(f=>f.endsWith('.sql')).sort())database.exec(readFileSync('drizzle/'+f,'utf8'));
 class Statement{constructor(sql,values=[]){this.sql=sql;this.values=values}bind(...values){return new Statement(this.sql,values)}async first(){return database.prepare(this.sql).get(...this.values)||null}async all(){return {results:database.prepare(this.sql).all(...this.values)}}async run(){const r=database.prepare(this.sql).run(...this.values);return {meta:{changes:Number(r.changes)}}}}
 globalThis.__db={prepare:s=>new Statement(s),batch:async statements=>{database.exec('BEGIN');try{const r=[];for(const s of statements)r.push(s.sql.trim().startsWith('SELECT')?await s.all():await s.run());database.exec('COMMIT');return r}catch(e){database.exec('ROLLBACK');throw e}}};
-globalThis.__user=null;
-const source=readFileSync('app/api/classroom/route.ts','utf8').replace("import { env } from 'cloudflare:workers';",'const env={DB:globalThis.__db};').replace("import { getChatGPTUser } from '../../chatgpt-auth';",'const getChatGPTUser=async()=>globalThis.__user;');
+globalThis.__secret=crypto.randomUUID();
+let teacherCookie='';
+const source=readFileSync('app/api/classroom/route.ts','utf8').replace("import { env } from 'cloudflare:workers';",'const env={DB:globalThis.__db,get TEACHER_PASSCODE(){return globalThis.__secret}};').replace("import { getChatGPTUser } from '../../chatgpt-auth';",'const getChatGPTUser=async()=>globalThis.__user;');
 const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
 const route=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'));
-async function call(action,data,cookie='',origin='https://class.test'){const req=new Request('https://class.test/api/classroom'+(data?'':'?'+action),data?{method:'POST',headers:{origin,'content-type':'application/json',cookie,'cf-connecting-ip':'test-ip'},body:JSON.stringify({action,...data})}:{headers:{cookie}});const r=await route[data?'POST':'GET'](req);return {status:r.status,data:await r.json(),cookie:r.headers.get('set-cookie')?.split(';')[0]}}
+async function call(action,data,cookie=teacherCookie,origin='https://class.test'){const req=new Request('https://class.test/api/classroom'+(data?'':'?'+action),data?{method:'POST',headers:{origin,'content-type':'application/json',cookie,'cf-connecting-ip':'test-ip'},body:JSON.stringify({action,...data})}:{headers:{cookie}});const r=await route[data?'POST':'GET'](req);return {status:r.status,data:await r.json(),cookie:r.headers.get('set-cookie')?.split(';')[0]}}
 await test('Complete classroom flow: authentication, privacy, scoring, audit, retries, session lifecycle',async()=>{
  assert.equal((await call('create',{teacher:'Afi',title:'Pemol'})).status,401);
- globalThis.__user={userId:'teacher-a'};
+ const login=await call('teacher-login',{pin:globalThis.__secret});assert.equal(login.status,200);teacherCookie=login.cookie;
  assert.equal((await call('create',{teacher:'Afi',title:'Pemol'},'','https://evil.test')).status,403);
+ assert.equal((await call('teacher-login',{pin:'incorrect'})).status,401);
  const created=await call('create',{teacher:'Afi',title:'Pemol'});assert.equal(created.status,200);const id=created.data.id;
  const b=await call('action=board&id='+id);const code=b.data.classroom.code;assert.equal(b.data.people.length,0);
- globalThis.__user=null;
+ const savedCookie=teacherCookie;teacherCookie='';
  assert.equal((await call('action=board&id='+id)).status,401);
  assert.equal((await call('status',{id,status:'closed'})).status,401);
  let j=await call('join',{code,name:'Nadia Putri',pin:'rahasia123'});assert.equal(j.status,200);const cookie=j.cookie;
@@ -31,8 +33,8 @@ await test('Complete classroom flow: authentication, privacy, scoring, audit, re
  const retry=await call('claim',{requestId},cookie);assert.equal(retry.data.duplicate,true);
  assert.equal((await call('claim',{requestId:crypto.randomUUID()},cookie)).status,409);
  assert.equal((await call('action=me',null,cookie)).data.score,1);
- globalThis.__user={userId:'teacher-b'};assert.equal((await call('action=board&id='+id)).status,403);assert.equal((await call('status',{id,status:'paused'})).status,403);
- globalThis.__user={userId:'teacher-a'};
+ teacherCookie='sc_teacher=forged';assert.equal((await call('action=board&id='+id)).status,401);assert.equal((await call('status',{id,status:'paused'})).status,401);
+ teacherCookie=savedCookie;
  let board=(await call('action=board&id='+id)).data;assert.equal(board.people.length,1);assert.equal(board.events.length,1);assert.equal(board.people[0].score,1);
  await call('status',{id,status:'paused'});assert.equal((await call('claim',{requestId:crypto.randomUUID()},cookie)).status,409);
  await call('revoke',{id,starId:board.events[0].id,reason:'Tanpa arahan'});
@@ -48,4 +50,8 @@ await test('Complete classroom flow: authentication, privacy, scoring, audit, re
  const token=database.prepare('SELECT hash FROM tokens LIMIT 1').get();assert.notEqual(token.hash,cookie.split('=')[1]);
  for(let i=0;i<14;i++)await call('join',{code,name:'Target name',pin:'wrong123'});
  assert.equal((await call('join',{code,name:'Target name',pin:'wrong123'})).status,429);
+ await call('teacher-logout',{});assert.equal((await call('action=board&id='+id)).status,401);
+ const again=await call('teacher-login',{pin:globalThis.__secret});teacherCookie=again.cookie;assert.equal((await call('action=board&id='+id)).status,200);
+ globalThis.__secret=crypto.randomUUID();assert.equal((await call('action=board&id='+id)).status,401);
+ for(let i=0;i<8;i++)await call('teacher-login',{pin:'wrong'});assert.equal((await call('teacher-login',{pin:'wrong'})).status,429);
 });

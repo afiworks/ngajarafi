@@ -4,3 +4,5 @@ export const participants = sqliteTable('participants', {id:text('id').primaryKe
 export const tokens = sqliteTable('tokens', {hash:text('hash').primaryKey(), participantId:text('participant_id').notNull().references(()=>participants.id), expires:integer('expires').notNull()});
 export const stars = sqliteTable('stars', {id:integer('id').primaryKey({autoIncrement:true}), participantId:text('participant_id').notNull().references(()=>participants.id), classId:text('class_id').notNull().references(()=>classes.id), requestId:text('request_id').notNull().unique(), created:integer('created').notNull(), revoked:integer('revoked'), reason:text('reason')});
 export const attempts = sqliteTable('attempts', {key:text('key').primaryKey(), count:integer('count').notNull(), until:integer('until').notNull()});
+
+export const teacherSessions = sqliteTable('teacher_sessions', {hash:text('hash').primaryKey(), expires:integer('expires').notNull(), version:text('version').notNull()});

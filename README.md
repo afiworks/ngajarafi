@@ -7,7 +7,7 @@ Aplikasi apresiasi interaktif untuk sesi Pemol. Nuansa biru-putih corporate deng
 - Peserta scan QR atau memasukkan kode kelas 8 karakter.
 - Nama + passcode pribadi minimal 6 karakter; masuk kembali dengan identitas yang sama.
 - Halaman peserta hanya menampilkan identitas sendiri, total bintang sendiri, dan tombol klaim.
-- Pengajar masuk melalui identitas ChatGPT yang diverifikasi platform, mengisi nama, dan membuat sesi. Akses leaderboard dan seluruh operasi pengelolaan dibatasi ke pembuat sesi di server.
+- Pengajar memasukkan passcode khusus, mengisi nama, dan membuat sesi. Tidak perlu akun ChatGPT. Passcode diperiksa di server; akses dashboard memakai cookie HttpOnly yang berlaku 12 jam. Gunakan **Kunci pengajar** untuk keluar.
 - Leaderboard, podium, peringkat seri, pencarian aktivitas, dan tampilan presentasi.
 - Sinkronisasi otomatis setiap 1 detik pada dashboard; setiap 2 detik pada halaman peserta. Ini menggunakan polling, bukan WebSocket. Internet diperlukan.
 - Efek suara bintang asli melalui Web Audio. Klik **Aktifkan suara** sekali di laptop. Peramban harus tetap terbuka; perangkat/OS dapat membatasi suara saat tab tidak aktif.
@@ -17,7 +17,7 @@ Aplikasi apresiasi interaktif untuk sesi Pemol. Nuansa biru-putih corporate deng
 
 ## Cara menggunakan
 
-1. Buka aplikasi, pilih **Saya pengajar**, lalu masuk menggunakan akun ChatGPT milik pengajar.
+1. Buka aplikasi, pilih **Saya pengajar**, lalu masukkan passcode pengajar.
 2. Masukkan nama pengajar dan judul sesi. Buat kelas.
 3. Klik **Aktifkan suara** dan **Gabung kelas** untuk menampilkan QR.
 4. Peserta scan QR, isi nama lengkap serta passcode pribadi. Nama langsung muncul pada dashboard.
@@ -29,9 +29,11 @@ Nama yang sama (termasuk perbedaan kapital) dalam satu kelas dianggap identitas 
 
 ### Akses situs
 
-Deployment Sites pertama bersifat **privat untuk pemilik**. Akses privat tidak cukup untuk uji scan oleh peserta. Sebelum penggunaan kelas, pemilik perlu meminta perubahan akses situs ke **publik** melalui pengaturan Sites/ChatGPT. Nama dan passcode peserta tetap diwajibkan di aplikasi. Leaderboard tetap hanya dapat dibaca oleh akun pengajar pembuat kelas meskipun situs publik. Akun ChatGPT pengajar lain dapat membuat sesi sendiri, tetapi tidak dapat membaca sesi milik Afi.
+Situs sudah publik untuk peserta. Halaman pengajar dan API pengelolaan memerlukan passcode khusus. Semua sesi dalam aplikasi Afi dapat dikelola setelah passcode pengajar valid, termasuk sesi lama. Peserta hanya mendapat data dirinya sendiri.
 
-Jangan mempublikasikan endpoint Worker secara langsung tanpa proxy identitas Sites: header identitas pengajar dipercaya hanya karena ditambahkan/diverifikasi oleh platform. Untuk pindah hosting ke Vercel atau penyedia lain, integrasi autentikasi dan database harus diadaptasi. Repo ini adalah aplikasi Vinext + Cloudflare D1 untuk Sites, bukan proyek Vercel siap impor.
+Passcode pengajar disimpan sebagai secret runtime `TEACHER_PASSCODE` pada hosting, bukan di source, README, atau bundle browser. Login dibatasi 8 percobaan per alamat IP per 15 menit. Cookie pengajar berlaku 12 jam, tersimpan sebagai hash di database, dapat dicabut saat logout, dan otomatis tidak berlaku saat secret diganti. Fitur **Kunci pengajar** tersedia pada halaman daftar sesi.
+
+Repo ini adalah aplikasi Vinext + Cloudflare D1 untuk Sites. Untuk pindah hosting, integrasi runtime dan database harus diadaptasi.
 
 ## Pengembangan
 
@@ -53,9 +55,9 @@ Starter Sites mempertahankan integrasi build dan database. Skema ada di `db/sche
 - `app/page.tsx`: UI landing, peserta, dan pengajar.
 - `app/globals.css`: desain responsif.
 - `app/api/classroom/route.ts`: API, otorisasi, validasi, hashing, dan operasi atomik.
-- `app/chatgpt-auth.ts`: integrasi identitas platform.
+- `app/chatgpt-auth.ts`: helper bawaan starter yang tidak dipakai untuk login aplikasi.
 - `db/schema.ts`, `drizzle/`: skema dan migrasi.
-- `tests/classroom.test.mjs`: integrasi handler API dengan SQLite in-memory (mock hanya binding D1 dan identitas platform).
+- `tests/classroom.test.mjs`: integrasi handler API dengan SQLite in-memory (mock hanya binding D1 dan secret runtime).
 - `.openai/hosting.json`: identitas project hosting dan binding DB; tidak mengandung credential.
 
 ## Integritas & batasan
